@@ -6,6 +6,8 @@ set -e
 # preventing the non-root sub2api user from writing files.
 if [ "$(id -u)" = "0" ]; then
     mkdir -p /app/data
+    # Ensure /app is writable for in-place binary updates
+    chown sub2api:sub2api /app 2>/dev/null || true
     # Use || true to avoid failure on read-only mounted files (e.g. config.yaml:ro)
     chown -R sub2api:sub2api /app/data 2>/dev/null || true
     # Re-invoke this script as sub2api so the flag-detection below
