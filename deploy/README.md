@@ -35,31 +35,31 @@ Use the automated preparation script for the easiest setup:
 
 ```bash
 # Download and run the preparation script
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/ddys9621/sub2api/main/deploy/docker-deploy.sh | bash
 
 # Or download first, then run
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh -o docker-deploy.sh
+curl -sSL https://raw.githubusercontent.com/ddys9621/sub2api/main/deploy/docker-deploy.sh -o docker-deploy.sh
 chmod +x docker-deploy.sh
 ./docker-deploy.sh
 ```
 
 **What the script does:**
-- Downloads `docker-compose.local.yml` and `.env.example`
+- Downloads `docker-compose.yml` and `.env.example`
 - Automatically generates secure secrets (JWT_SECRET, TOTP_ENCRYPTION_KEY, POSTGRES_PASSWORD)
 - Creates `.env` file with generated secrets
-- Creates necessary data directories (data/, postgres_data/, redis_data/)
+- Uses Docker named volumes for app, PostgreSQL, and Redis data
 - **Displays generated credentials** (POSTGRES_PASSWORD, JWT_SECRET, etc.)
 
 **After running the script:**
 ```bash
 # Start services
-docker compose -f docker-compose.local.yml up -d
+docker compose up -d
 
 # View logs
-docker compose -f docker-compose.local.yml logs -f sub2api
+docker compose logs -f sub2api
 
 # If admin password was auto-generated, find it in logs:
-docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
+docker compose logs sub2api | grep "admin password"
 
 # Access Web UI
 # http://localhost:8080
@@ -71,7 +71,7 @@ If you prefer manual control:
 
 ```bash
 # Clone repository
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/ddys9621/sub2api.git
 cd sub2api/deploy
 
 # Configure environment
@@ -84,14 +84,11 @@ TOTP_ENCRYPTION_KEY=$(openssl rand -hex 32)
 echo "JWT_SECRET=${JWT_SECRET}" >> .env
 echo "TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY}" >> .env
 
-# Create data directories
-mkdir -p data postgres_data redis_data
-
-# Start all services using local directory version
-docker compose -f docker-compose.local.yml up -d
+# Start all services using the named-volume version
+docker compose up -d
 
 # View logs (check for auto-generated admin password)
-docker compose -f docker-compose.local.yml logs -f sub2api
+docker compose logs -f sub2api
 
 # Access Web UI
 # http://localhost:8080
@@ -101,10 +98,10 @@ docker compose -f docker-compose.local.yml logs -f sub2api
 
 | Version | Data Storage | Migration | Best For |
 |---------|-------------|-----------|----------|
-| **docker-compose.local.yml** | Local directories (./data, ./postgres_data, ./redis_data) | ✅ Easy (tar entire directory) | Production, need frequent backups/migration |
-| **docker-compose.yml** | Named volumes (/var/lib/docker/volumes/) | ⚠️ Requires docker commands | Simple setup, don't need migration |
+| **docker-compose.yml** | Named volumes (/var/lib/docker/volumes/) | Requires docker volume backup/restore commands | Default production setup |
+| **docker-compose.local.yml** | Local directories (./data, ./postgres_data, ./redis_data) | Easy to tar, but host filesystem sensitive | Explicit opt-in local-directory deployment |
 
-**Recommendation:** Use `docker-compose.local.yml` (deployed by `docker-deploy.sh`) for easier data management and migration.
+**Recommendation:** Use `docker-compose.yml` by default. Use `docker-compose.local.yml` only when you explicitly want bind-mounted data directories and understand the storage tradeoffs.
 
 ### How Auto-Setup Works
 
@@ -158,6 +155,29 @@ SELECT
 
 ### Commands
 
+For **named volumes version** (docker-compose.yml):
+
+```bash
+# Start services
+docker compose up -d
+
+# Stop services
+docker compose down
+
+# View logs
+docker compose logs -f sub2api
+
+# Restart Sub2API only
+docker compose restart sub2api
+
+# Update to latest version
+docker compose pull
+docker compose up -d
+
+# Remove all data (caution!)
+docker compose down -v
+```
+
 For **local directory version** (docker-compose.local.yml):
 
 ```bash
@@ -180,29 +200,6 @@ docker compose -f docker-compose.local.yml up -d
 # Remove all data (caution!)
 docker compose -f docker-compose.local.yml down
 rm -rf data/ postgres_data/ redis_data/
-```
-
-For **named volumes version** (docker-compose.yml):
-
-```bash
-# Start services
-docker compose up -d
-
-# Stop services
-docker compose down
-
-# View logs
-docker compose logs -f sub2api
-
-# Restart Sub2API only
-docker compose restart sub2api
-
-# Update to latest version
-docker compose pull
-docker compose up -d
-
-# Remove all data (caution!)
-docker compose down -v
 ```
 
 ### Environment Variables
@@ -353,12 +350,12 @@ For production servers using systemd.
 ### One-Line Installation
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/ddys9621/sub2api/main/deploy/install.sh | sudo bash
 ```
 
 ### Manual Installation
 
-1. Download the latest release from [GitHub Releases](https://github.com/Wei-Shaw/sub2api/releases)
+1. Download the latest release from [GitHub Releases](https://github.com/ddys9621/sub2api/releases)
 2. Extract and copy the binary to `/opt/sub2api/`
 3. Copy `sub2api.service` to `/etc/systemd/system/`
 4. Run:
@@ -488,6 +485,25 @@ The main config file is at `/etc/sub2api/config.yaml` (created by Setup Wizard).
 
 ### Docker
 
+For **named volumes version**:
+
+```bash
+# Check container status
+docker compose ps
+
+# View detailed logs
+docker compose logs --tail=100 sub2api
+
+# Check database connection
+docker compose exec postgres pg_isready
+
+# Check Redis connection
+docker compose exec redis redis-cli ping
+
+# Restart all services
+docker compose restart
+```
+
 For **local directory version**:
 
 ```bash
@@ -508,25 +524,6 @@ docker compose -f docker-compose.local.yml restart
 
 # Check data directories
 ls -la data/ postgres_data/ redis_data/
-```
-
-For **named volumes version**:
-
-```bash
-# Check container status
-docker compose ps
-
-# View detailed logs
-docker compose logs --tail=100 sub2api
-
-# Check database connection
-docker compose exec postgres pg_isready
-
-# Check Redis connection
-docker compose exec redis redis-cli ping
-
-# Restart all services
-docker compose restart
 ```
 
 ### Binary Install

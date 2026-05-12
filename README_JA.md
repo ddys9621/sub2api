@@ -112,7 +112,7 @@ GitHub Releases からビルド済みバイナリをダウンロードするワ�
 #### インストール手順
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/ddys9621/sub2api/main/deploy/install.sh | sudo bash
 ```
 
 スクリプトは以下を実行します:
@@ -162,7 +162,7 @@ sudo journalctl -u sub2api -f
 sudo systemctl restart sub2api
 
 # アンインストール
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
+curl -sSL https://raw.githubusercontent.com/ddys9621/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
 ```
 
 ---
@@ -185,7 +185,7 @@ PostgreSQL と Redis のコンテナを含む Docker Compose でデプロイし�
 mkdir -p sub2api-deploy && cd sub2api-deploy
 
 # デプロイ準備スクリプトをダウンロードして実行
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/ddys9621/sub2api/main/deploy/docker-deploy.sh | bash
 
 # サービスを起動
 docker compose up -d
@@ -195,10 +195,10 @@ docker compose logs -f sub2api
 ```
 
 **スクリプトの動作内容:**
-- `docker-compose.local.yml`（`docker-compose.yml` として保存）と `.env.example` をダウンロード
+- `docker-compose.yml` と `.env.example` をダウンロード
 - セキュアな認証情報（JWT_SECRET、TOTP_ENCRYPTION_KEY、POSTGRES_PASSWORD）を自動生成
 - 自動生成されたシークレットで `.env` ファイルを作成
-- データディレクトリを作成（バックアップ・移行が容易なローカルディレクトリを使用）
+- アプリ、PostgreSQL、Redis のデータを Docker named volume に保存
 - 生成された認証情報を参照用に表示
 
 #### 手動デプロイ
@@ -207,7 +207,7 @@ docker compose logs -f sub2api
 
 ```bash
 # 1. リポジトリをクローン
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/ddys9621/sub2api.git
 cd sub2api/deploy
 
 # 2. 環境設定ファイルをコピー
@@ -250,31 +250,24 @@ openssl rand -hex 32
 ```
 
 ```bash
-# 4. データディレクトリを作成（ローカルバージョンの場合）
-mkdir -p data postgres_data redis_data
-
-# 5. すべてのサービスを起動
-# オプション A: ローカルディレクトリバージョン（推奨 - 移行が容易）
-docker compose -f docker-compose.local.yml up -d
-
-# オプション B: 名前付きボリュームバージョン（シンプルなセットアップ）
+# 4. すべてのサービスを起動
 docker compose up -d
 
-# 6. ステータスを確認
-docker compose -f docker-compose.local.yml ps
+# 5. ステータスを確認
+docker compose ps
 
-# 7. ログを表示
-docker compose -f docker-compose.local.yml logs -f sub2api
+# 6. ログを表示
+docker compose logs -f sub2api
 ```
 
 #### デプロイバージョン
 
 | バージョン | データストレージ | 移行 | 推奨用途 |
 |---------|-------------|-----------|----------|
-| **docker-compose.local.yml** | ローカルディレクトリ | ✅ 容易（ディレクトリ全体を tar） | 本番環境、頻繁なバックアップ |
-| **docker-compose.yml** | 名前付きボリューム | ⚠️ docker コマンドが必要 | シンプルなセットアップ |
+| **docker-compose.yml** | Docker named volume | Docker volume のバックアップ/復元コマンドが必要 | デフォルトの本番デプロイ |
+| **docker-compose.local.yml** | ローカルディレクトリ | tar しやすいがホストのファイルシステムに依存 | 明示的にローカルディレクトリを使う場合 |
 
-**推奨:** データ管理が容易な `docker-compose.local.yml`（スクリプトによるデプロイ）を使用してください。
+**推奨:** デフォルトでは `docker-compose.yml` を使用してください。ローカルディレクトリの bind mount が必要な場合のみ `docker-compose.local.yml` を使用してください。
 
 #### アクセス
 
@@ -282,15 +275,15 @@ docker compose -f docker-compose.local.yml logs -f sub2api
 
 管理者パスワードが自動生成された場合は、ログで確認できます:
 ```bash
-docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
+docker compose logs sub2api | grep "admin password"
 ```
 
 #### アップグレード
 
 ```bash
 # 最新イメージをプルしてコンテナを再作成
-docker compose -f docker-compose.local.yml pull
-docker compose -f docker-compose.local.yml up -d
+docker compose pull
+docker compose up -d
 ```
 
 #### 簡単な移行（ローカルディレクトリバージョン）
@@ -316,17 +309,16 @@ docker compose -f docker-compose.local.yml up -d
 
 ```bash
 # すべてのサービスを停止
-docker compose -f docker-compose.local.yml down
+docker compose down
 
 # 再起動
-docker compose -f docker-compose.local.yml restart
+docker compose restart
 
 # すべてのログを表示
-docker compose -f docker-compose.local.yml logs -f
+docker compose logs -f
 
 # すべてのデータを削除（注意！）
-docker compose -f docker-compose.local.yml down
-rm -rf data/ postgres_data/ redis_data/
+docker compose down -v
 ```
 
 ---
@@ -346,7 +338,7 @@ rm -rf data/ postgres_data/ redis_data/
 
 ```bash
 # 1. リポジトリをクローン
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/ddys9621/sub2api.git
 cd sub2api
 
 # 2. pnpm をインストール（未インストールの場合）

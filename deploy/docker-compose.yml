@@ -16,7 +16,7 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: weishaw/sub2api:latest
+    image: ghcr.io/ddys9621/sub2api:latest
     container_name: sub2api
     restart: unless-stopped
     ulimits:
@@ -211,8 +211,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    ports:
-      - 5432:5432
     # 注意：不暴露端口到宿主机，应用通过内部网络连接
     # 如需调试，可临时添加：ports: ["127.0.0.1:5433:5432"]
 
@@ -248,8 +246,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
-    ports:
-      - 6379:6379
+    # 注意：不暴露端口到宿主机，应用通过内部网络连接
+    # 如需调试，可临时添加：ports: ["127.0.0.1:6379:6379"]
 # =============================================================================
 # Volumes
 # =============================================================================

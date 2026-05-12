@@ -12,7 +12,7 @@
 
 services:
   sub2api:
-    image: weishaw/sub2api:latest
+    image: ghcr.io/ddys9621/sub2api:latest
     container_name: sub2api
     restart: unless-stopped
     ulimits:
@@ -93,6 +93,11 @@ services:
       # SECURITY: This repo does not embed third-party client_secret.
       - GEMINI_CLI_OAUTH_CLIENT_SECRET=${GEMINI_CLI_OAUTH_CLIENT_SECRET:-}
       - ANTIGRAVITY_OAUTH_CLIENT_SECRET=${ANTIGRAVITY_OAUTH_CLIENT_SECRET:-}
+
+      # =======================================================================
+      # Update Configuration
+      # =======================================================================
+      - UPDATE_PROXY_URL=${UPDATE_PROXY_URL:-}
 
       # =======================================================================
       # Image Generation Stream & Concurrency

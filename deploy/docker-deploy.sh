@@ -3,9 +3,9 @@
 # Sub2API Docker Deployment Preparation Script
 # =============================================================================
 # This script prepares deployment files for Sub2API:
-#   - Downloads docker-compose.local.yml and .env.example
+#   - Downloads docker-compose.yml and .env.example
 #   - Generates secure secrets (JWT_SECRET, TOTP_ENCRYPTION_KEY, POSTGRES_PASSWORD)
-#   - Creates necessary data directories
+#   - Uses Docker named volumes for application, PostgreSQL, and Redis data
 #
 # After running this script, you can start services with:
 #   docker-compose up -d
@@ -21,7 +21,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # GitHub raw content base URL
-GITHUB_RAW_URL="https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/ddys9621/sub2api/main/deploy"
 
 # Print colored message
 print_info() {
@@ -75,12 +75,12 @@ main() {
         fi
     fi
 
-    # Download docker-compose.local.yml and save as docker-compose.yml
+    # Download the default named-volume compose file.
     print_info "Downloading docker-compose.yml..."
     if command_exists curl; then
-        curl -sSL "${GITHUB_RAW_URL}/docker-compose.local.yml" -o docker-compose.yml
+        curl -sSL "${GITHUB_RAW_URL}/docker-compose.yml" -o docker-compose.yml
     elif command_exists wget; then
-        wget -q "${GITHUB_RAW_URL}/docker-compose.local.yml" -O docker-compose.yml
+        wget -q "${GITHUB_RAW_URL}/docker-compose.yml" -O docker-compose.yml
     else
         print_error "Neither curl nor wget is installed. Please install one of them."
         exit 1
@@ -121,10 +121,8 @@ main() {
         sed -i '' "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PASSWORD}/" .env
     fi
 
-    # Create data directories
-    print_info "Creating data directories..."
-    mkdir -p data postgres_data redis_data
-    print_success "Created data directories"
+    # Data is persisted by Docker named volumes declared in docker-compose.yml.
+    print_info "Data will be stored in Docker named volumes."
 
     # Set secure permissions for .env file (readable/writable only by owner)
     chmod 600 .env
@@ -147,9 +145,11 @@ main() {
     echo "  docker-compose.yml        - Docker Compose configuration"
     echo "  .env                      - Environment variables (generated secrets)"
     echo "  .env.example              - Example template (for reference)"
-    echo "  data/                     - Application data (will be created on first run)"
-    echo "  postgres_data/            - PostgreSQL data"
-    echo "  redis_data/               - Redis data"
+    echo ""
+    echo "Docker volumes:"
+    echo "  sub2api_data              - Application data"
+    echo "  postgres_data             - PostgreSQL data"
+    echo "  redis_data                - Redis data"
     echo ""
     echo "Next steps:"
     echo "  1. (Optional) Edit .env to customize configuration"

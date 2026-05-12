@@ -112,7 +112,7 @@ One-click installation script that downloads pre-built binaries from GitHub Rele
 #### Installation Steps
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/ddys9621/sub2api/main/deploy/install.sh | sudo bash
 ```
 
 The script will:
@@ -162,7 +162,7 @@ sudo journalctl -u sub2api -f
 sudo systemctl restart sub2api
 
 # Uninstall
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
+curl -sSL https://raw.githubusercontent.com/ddys9621/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
 ```
 
 ---
@@ -185,7 +185,7 @@ Use the automated deployment script for easy setup:
 mkdir -p sub2api-deploy && cd sub2api-deploy
 
 # Download and run deployment preparation script
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/ddys9621/sub2api/main/deploy/docker-deploy.sh | bash
 
 # Start services
 docker compose up -d
@@ -195,10 +195,10 @@ docker compose logs -f sub2api
 ```
 
 **What the script does:**
-- Downloads `docker-compose.local.yml` (saved as `docker-compose.yml`) and `.env.example`
+- Downloads `docker-compose.yml` and `.env.example`
 - Generates secure credentials (JWT_SECRET, TOTP_ENCRYPTION_KEY, POSTGRES_PASSWORD)
 - Creates `.env` file with auto-generated secrets
-- Creates data directories (uses local directories for easy backup/migration)
+- Uses Docker named volumes for app, PostgreSQL, and Redis data
 - Displays generated credentials for your reference
 
 #### Manual Deployment
@@ -207,7 +207,7 @@ If you prefer manual setup:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/ddys9621/sub2api.git
 cd sub2api/deploy
 
 # 2. Copy environment configuration
@@ -250,31 +250,24 @@ openssl rand -hex 32
 ```
 
 ```bash
-# 4. Create data directories (for local version)
-mkdir -p data postgres_data redis_data
-
-# 5. Start all services
-# Option A: Local directory version (recommended - easy migration)
-docker compose -f docker-compose.local.yml up -d
-
-# Option B: Named volumes version (simple setup)
+# 4. Start all services
 docker compose up -d
 
-# 6. Check status
-docker compose -f docker-compose.local.yml ps
+# 5. Check status
+docker compose ps
 
-# 7. View logs
-docker compose -f docker-compose.local.yml logs -f sub2api
+# 6. View logs
+docker compose logs -f sub2api
 ```
 
 #### Deployment Versions
 
 | Version | Data Storage | Migration | Best For |
 |---------|-------------|-----------|----------|
-| **docker-compose.local.yml** | Local directories | ✅ Easy (tar entire directory) | Production, frequent backups |
-| **docker-compose.yml** | Named volumes | ⚠️ Requires docker commands | Simple setup |
+| **docker-compose.yml** | Named volumes | Docker volume backup/restore commands | Default production setup |
+| **docker-compose.local.yml** | Local directories | Easy to tar, but host filesystem sensitive | Explicit opt-in local-directory deployment |
 
-**Recommendation:** Use `docker-compose.local.yml` (deployed by script) for easier data management.
+**Recommendation:** Use `docker-compose.yml` by default. Use `docker-compose.local.yml` only when you explicitly want bind-mounted data directories.
 
 #### Access
 
@@ -282,15 +275,15 @@ Open `http://YOUR_SERVER_IP:8080` in your browser.
 
 If admin password was auto-generated, find it in logs:
 ```bash
-docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
+docker compose logs sub2api | grep "admin password"
 ```
 
 #### Upgrade
 
 ```bash
 # Pull latest image and recreate container
-docker compose -f docker-compose.local.yml pull
-docker compose -f docker-compose.local.yml up -d
+docker compose pull
+docker compose up -d
 ```
 
 #### Easy Migration (Local Directory Version)
@@ -316,17 +309,16 @@ docker compose -f docker-compose.local.yml up -d
 
 ```bash
 # Stop all services
-docker compose -f docker-compose.local.yml down
+docker compose down
 
 # Restart
-docker compose -f docker-compose.local.yml restart
+docker compose restart
 
 # View all logs
-docker compose -f docker-compose.local.yml logs -f
+docker compose logs -f
 
 # Remove all data (caution!)
-docker compose -f docker-compose.local.yml down
-rm -rf data/ postgres_data/ redis_data/
+docker compose down -v
 ```
 
 ---
@@ -346,7 +338,7 @@ Build and run from source code for development or customization.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/ddys9621/sub2api.git
 cd sub2api
 
 # 2. Install pnpm (if not already installed)
