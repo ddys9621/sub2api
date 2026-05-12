@@ -122,6 +122,17 @@ type AnthropicMessage struct {
 	Content json.RawMessage `json:"content"`
 }
 
+// KiroImage represents an image in the Kiro request payload.
+type KiroImage struct {
+	Format string         `json:"format"`
+	Source KiroImageSource `json:"source"`
+}
+
+// KiroImageSource holds base64-encoded image bytes.
+type KiroImageSource struct {
+	Bytes string `json:"bytes"`
+}
+
 // AnthropicTool mirrors a single tool in the Anthropic request.
 //
 // Type distinguishes between user-defined tools (type: "" / "function" / "custom",
@@ -341,11 +352,21 @@ func BuildKiroPayload(req *AnthropicRequest, opts BuildOptions) (map[string]any,
 		}
 	}
 
+	// Extract images from the last (current) raw message for vision support.
+	lastRawMsg := req.Messages[len(req.Messages)-1]
+	images := extractImages(lastRawMsg.Content)
+	if len(images) > 0 {
+		slog.Info("kiro request: forwarding images", "count", len(images))
+	}
+
 	// Assemble userInputMessage
 	userInputMessage := map[string]any{
 		"content": currentText,
 		"modelId": modelID,
 		"origin":  kiroRequestOrigin,
+	}
+	if len(images) > 0 {
+		userInputMessage["images"] = images
 	}
 	if len(userInputContext) > 0 {
 		userInputMessage["userInputMessageContext"] = userInputContext
@@ -386,8 +407,8 @@ type uniMessage struct {
 	Text string
 }
 
-// normaliseMessages extracts text-only messages and merges adjacent same-role
-// ones. Tool results / images are currently out of scope for the MVP.
+// normaliseMessages extracts text messages and merges adjacent same-role ones.
+// Images are handled separately via extractImages on the current (last) message.
 func normaliseMessages(in []AnthropicMessage) []uniMessage {
 	out := make([]uniMessage, 0, len(in))
 	for _, m := range in {
@@ -487,6 +508,63 @@ func extractSystemPrompt(system any) string {
 			}
 			return strings.Join(parts, "\n")
 		}
+	}
+	return ""
+}
+
+// extractImages parses image content blocks from an Anthropic message and
+// returns them in Kiro's format ({format, source:{bytes}}).
+func extractImages(raw json.RawMessage) []KiroImage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var blocks []map[string]any
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil
+	}
+	var images []KiroImage
+	for _, b := range blocks {
+		if b["type"] != "image" {
+			continue
+		}
+		src, ok := b["source"].(map[string]any)
+		if !ok {
+			continue
+		}
+		srcType, _ := src["type"].(string)
+		switch srcType {
+		case "base64":
+			mediaType, _ := src["media_type"].(string)
+			data, _ := src["data"].(string)
+			if data == "" {
+				continue
+			}
+			format := normalizeImageFormat(mediaType)
+			if format == "" {
+				continue
+			}
+			images = append(images, KiroImage{
+				Format: format,
+				Source: KiroImageSource{Bytes: data},
+			})
+		}
+	}
+	return images
+}
+
+// normalizeImageFormat extracts and normalises the image sub-type from a MIME
+// media_type string (e.g. "image/png" -> "png", "image/jpeg" -> "jpeg").
+func normalizeImageFormat(mediaType string) string {
+	parts := strings.SplitN(mediaType, "/", 2)
+	if len(parts) != 2 || parts[0] != "image" {
+		return ""
+	}
+	f := strings.ToLower(parts[1])
+	switch f {
+	case "jpeg", "jpg":
+		return "jpeg"
+	case "png", "gif", "webp":
+		return f
 	}
 	return ""
 }
