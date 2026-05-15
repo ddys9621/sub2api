@@ -164,6 +164,14 @@ type KiroGatewayService struct {
 	// (and therefore avoid regenerating wire). When nil, every search
 	// round-trips to Kiro as before.
 	mcpResultCache *kiroMCPResultCache
+	// promptCacheTracker simulates Anthropic prompt-caching on Kiro accounts.
+	// Kiro CodeWhisperer's native prefix cache reads cachePoint markers but
+	// does not honour client-supplied cache_control.ttl ("5m"/"1h"). Some
+	// Kiro models do not even emit tokenUsage.cacheReadInputTokens. The
+	// tracker fills both gaps locally so the cache_control fields a client
+	// sends actually surface in the response usage. Defaults to the global
+	// singleton; tests can swap via SetPromptCacheTracker.
+	promptCacheTracker *KiroPromptCacheTracker
 	// httpClient is reused across requests; Kiro happily serves multiple
 	// sequential streaming calls over the same HTTP/2 connection so a single
 	// pool is fine.
@@ -173,8 +181,9 @@ type KiroGatewayService struct {
 // NewKiroGatewayService constructs the service and its long-lived http client.
 func NewKiroGatewayService(tokenProvider *KiroTokenProvider, settings *SettingService) *KiroGatewayService {
 	return &KiroGatewayService{
-		tokenProvider: tokenProvider,
-		settings:      settings,
+		tokenProvider:      tokenProvider,
+		settings:           settings,
+		promptCacheTracker: DefaultKiroPromptCacheTracker(),
 		httpClient: &http.Client{
 			Timeout: 0, // set per-request via context
 			Transport: &http.Transport{
@@ -192,6 +201,87 @@ func NewKiroGatewayService(tokenProvider *KiroTokenProvider, settings *SettingSe
 			},
 		},
 	}
+}
+
+// SetPromptCacheTracker swaps the prompt cache tracker. nil restores the
+// process-level singleton. Used by integration tests that need an isolated
+// tracker per test run.
+func (s *KiroGatewayService) SetPromptCacheTracker(tracker *KiroPromptCacheTracker) {
+	if s == nil {
+		return
+	}
+	if tracker == nil {
+		s.promptCacheTracker = DefaultKiroPromptCacheTracker()
+		return
+	}
+	s.promptCacheTracker = tracker
+}
+
+// buildPromptCacheProfile inspects the original /v1/messages body for
+// cache_control breakpoints and returns the corresponding profile. The
+// profile is the only thing the simulator needs to compute hit/miss on
+// the way back; nil means the request did not opt into caching at all,
+// in which case the entire simulator is bypassed and the existing upstream
+// transparency wins.
+//
+// totalInputTokens uses estimateKiroInputTokens — the same heuristic the
+// rest of the Kiro path uses when the upstream omits usage.input_tokens.
+func (s *KiroGatewayService) buildPromptCacheProfile(parsed *ParsedRequest) *KiroCacheProfile {
+	if s == nil || s.promptCacheTracker == nil || parsed == nil || len(parsed.Body) == 0 {
+		return nil
+	}
+	estimatedInput := estimateKiroInputTokens(parsed)
+	return s.promptCacheTracker.BuildClaudeProfileFromBody(parsed.Body, parsed.Model, estimatedInput)
+}
+
+// applyPromptCacheTracking is the post-flight half of the simulator. It
+//   1. computes the simulated cache_read/cache_creation against the current
+//      account-scoped breakpoint store,
+//   2. merges those numbers into result.Usage via applySimulatedCacheUsage
+//      (upstream values still win when present),
+//   3. records the request's breakpoints so the *next* call can hit them.
+//
+// Caller MUST gate this on a successful upstream stream/JSON drive — a
+// partial response would write breakpoints the model never finished
+// producing, and the next request would falsely "hit" them.
+func (s *KiroGatewayService) applyPromptCacheTracking(account *Account, profile *KiroCacheProfile, result *ForwardResult) {
+	if s == nil || s.promptCacheTracker == nil || profile == nil || account == nil || result == nil {
+		return
+	}
+	sim := s.promptCacheTracker.Compute(account.ID, profile)
+	applySimulatedCacheUsage(&result.Usage, sim)
+	s.promptCacheTracker.Update(account.ID, profile)
+}
+
+// applySimulatedCacheUsage merges the local-tracker fallback into the live
+// usage record. Strategy:
+//   - Upstream Kiro tokenUsage already returned a non-zero cache field
+//     (cache_read OR cache_creation): trust it; the upstream prefix cache
+//     actually fired. Skip the simulator entirely so we don't double-count.
+//   - Otherwise: write the simulator's numbers in place. This is what makes
+//     the client-side cache_control field finally produce a visible effect
+//     for Kiro accounts.
+//
+// The 5m/1h split is always taken from the simulator when it ran, because
+// Kiro upstream never reports it.
+func applySimulatedCacheUsage(usage *ClaudeUsage, sim KiroCacheUsage) {
+	if usage == nil || sim.IsZero() {
+		return
+	}
+	hasUpstreamCache := usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0
+	if hasUpstreamCache {
+		// Trust upstream; only fill the 5m/1h split if Kiro left it empty
+		// (it always will today — Kiro upstream never reports the split).
+		if usage.CacheCreation5mTokens == 0 && usage.CacheCreation1hTokens == 0 {
+			usage.CacheCreation5mTokens = sim.CacheCreation5mTokens
+			usage.CacheCreation1hTokens = sim.CacheCreation1hTokens
+		}
+		return
+	}
+	usage.CacheCreationInputTokens = sim.CacheCreationInputTokens
+	usage.CacheReadInputTokens = sim.CacheReadInputTokens
+	usage.CacheCreation5mTokens = sim.CacheCreation5mTokens
+	usage.CacheCreation1hTokens = sim.CacheCreation1hTokens
 }
 
 // SetWebSearchDeps wires in the ChannelService used for channel-level
@@ -262,6 +352,13 @@ func (s *KiroGatewayService) Forward(
 	}, account, parsed.GroupID, parsed.Body) {
 		return executeWebSearchEmulation(ctx, c, account, parsed)
 	}
+
+	// Build the prompt-cache profile from the original request body before any
+	// transformer mutates it. The profile is reused on the way out to compute
+	// the simulated cache_read/cache_creation usage. nil means the request
+	// carries no cache_control breakpoints — in that case the simulator stays
+	// out of the way and the upstream tokenUsage is the only source of truth.
+	cacheProfile := s.buildPromptCacheProfile(parsed)
 
 	// Resolve token (refresh as needed).
 	token, err := s.tokenProvider.GetAccessToken(ctx, account)
@@ -378,7 +475,7 @@ kiroResponseOK:
 		return s.forwardNonStream(
 			forwardCtx, c, resp.Body, account, parsed, anthropicReq,
 			profileArn, mapping, requestID, conversationID, upstreamModel,
-			start, token, client, kiroEndpoint,
+			start, token, client, kiroEndpoint, cacheProfile,
 		)
 	}
 
@@ -468,7 +565,7 @@ kiroResponseOK:
 	// The usage log persistence layer reads from ClaudeUsage and writes the
 	// Anthropic-named columns, so the frontend's existing cache-hit badges
 	// (UsageView.vue) light up automatically once these fields are non-zero.
-	return &ForwardResult{
+	result := &ForwardResult{
 		RequestID:     kiroFirstNonEmpty(requestID, conversationID),
 		Model:         parsed.Model,
 		UpstreamModel: upstreamModel,
@@ -483,7 +580,16 @@ kiroResponseOK:
 		},
 		KiroMeteringCredit:  encoder.MeteringCredit(),
 		KiroContextUsagePct: encoder.ContextUsagePct(),
-	}, nil
+	}
+	// Apply the prompt-cache simulator (no-op when cacheProfile is nil or the
+	// upstream already reported real cache fields). Only run for streams that
+	// completed without an error — a partial/aborted stream might have left
+	// the conversation truncated, and writing the breakpoints would let the
+	// next request "hit" a prefix the model never actually consumed.
+	if err == nil {
+		s.applyPromptCacheTracking(account, cacheProfile, result)
+	}
+	return result, nil
 }
 
 // estimateKiroInputTokens approximates the prompt token count for a Kiro
@@ -919,6 +1025,7 @@ func (s *KiroGatewayService) forwardNonStream(
 	token string,
 	client *http.Client,
 	kiroEndpoint string,
+	cacheProfile *KiroCacheProfile,
 ) (*ForwardResult, error) {
 	builder := kiro.NewAnthropicNonStreamBuilder(parsed.Model)
 	var firstTokenMs *int
@@ -978,7 +1085,7 @@ func (s *KiroGatewayService) forwardNonStream(
 	// /v1/messages turns (Claude Code's WebFetch polling etc.) would never
 	// light up the cache-hit badges even when the upstream actually served
 	// cached tokens.
-	return &ForwardResult{
+	result := &ForwardResult{
 		RequestID:     kiroFirstNonEmpty(requestID, conversationID),
 		Model:         parsed.Model,
 		UpstreamModel: upstreamModel,
@@ -993,7 +1100,14 @@ func (s *KiroGatewayService) forwardNonStream(
 		},
 		KiroMeteringCredit:  builder.MeteringCredit(),
 		KiroContextUsagePct: builder.ContextUsagePct(),
-	}, nil
+	}
+	// Apply prompt-cache simulator (mirrors the streaming path). Only when
+	// the underlying drive returned without an error — we don't want a
+	// truncated/aborted JSON response to pollute the breakpoint store.
+	if err == nil {
+		s.applyPromptCacheTracking(account, cacheProfile, result)
+	}
+	return result, nil
 }
 
 func kiroFirstNonEmpty(a, b string) string {

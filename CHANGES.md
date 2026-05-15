@@ -40,6 +40,53 @@ This fork adds **Kiro platform support** (Amazon Q Developer / CodeWhisperer) an
 - If every submitted tool is dropped, the whole `tools` array is omitted
   instead of sent as `[]`.
 
+### Kiro Prompt Cache Simulator (account-scoped, in-memory)
+- Added `KiroPromptCacheTracker` (`internal/service/kiro_prompt_cache_tracker.go`),
+  ported from `Kiro-account-manager/src/main/proxy/promptCacheTracker.ts`.
+  The tracker maintains a per-account `(fingerprint → expires_at)` table
+  built from SHA-256 cumulative hashes over the request's `tools[]`,
+  `system`, and `messages[]` blocks (canonical JSON, key-sorted), and
+  exposes the same `BuildClaudeProfileFromBody` / `Compute` / `Update`
+  surface as the upstream TypeScript implementation.
+- **Why**: Kiro CodeWhisperer's native prefix cache only honours its own
+  `cachePoint` markers and ignores client-supplied `cache_control.ttl`
+  (`"5m"` / `"1h"`). On top of that, several Kiro models never emit
+  `tokenUsage.cacheReadInputTokens` at all — so a Claude Code / Cline
+  / Cursor user who painstakingly inserted `cache_control` in their
+  request would see `cache_read_input_tokens: 0` forever and the cache
+  badge would never light up. The simulator fills that gap locally.
+- **Fallback strategy** (`applySimulatedCacheUsage`):
+  1. Upstream Kiro reported a non-zero `cacheRead` or `cacheWrite` →
+     trust the upstream values; the real prefix cache fired.
+  2. Upstream is silent → write the simulator's numbers in their place.
+  3. The 5m/1h ephemeral split (`cache_creation.ephemeral_5m_input_tokens`
+     / `ephemeral_1h_input_tokens`) is always taken from the simulator,
+     because Kiro upstream never reports the breakdown.
+- `KiroGatewayService` gains a default-singleton `promptCacheTracker`
+  (override via `SetPromptCacheTracker` for tests) and applies the
+  simulator after a successful streaming or non-streaming drive only —
+  partial / aborted responses do **not** pollute the breakpoint store,
+  which would otherwise let the next request "hit" tokens the model
+  never finished producing.
+- Constants mirror Anthropic documentation: 5min default ephemeral TTL,
+  1h extended TTL, 1024-token min cacheable threshold (4096 for Opus
+  models), 85% max cache ratio (the most recent turn cannot be 100%
+  cached), 200 entries per account, 60s prune cycle.
+- Tests:
+  - `kiro_prompt_cache_tracker_test.go` (14 cases): no-cache-control →
+    nil profile; first request all creation; identical request hits
+    cache; cross-account isolation; expired entries miss; 5m/1h
+    bucketing; Opus higher threshold; canonical-JSON fingerprint
+    stability across key order; hit refreshes expiry (sliding
+    window); content-length variation produces different fingerprints;
+    `Clear` removes all entries; nil-safety for `Compute` / `Update`;
+    `accountID == 0` is a no-op; per-account 200-entry cap honoured.
+  - `kiro_prompt_cache_integration_test.go` (15 cases): fallback
+    strategy in all combinations (upstream-zero / upstream-only-read /
+    upstream-only-creation / upstream-full-split), `buildPromptCacheProfile`
+    nil-safety, `applyPromptCacheTracking` happy path with second-call
+    hit, `SetPromptCacheTracker(nil)` restoring the singleton.
+
 ### Kiro MCP Result Caching (Redis, 15 min)
 - Added a small `kiroMCPResultCache` helper that stores Kiro /mcp
   web_search responses in Redis for 15 minutes, keyed by
