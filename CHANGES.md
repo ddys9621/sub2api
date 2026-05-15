@@ -55,13 +55,26 @@ This fork adds **Kiro platform support** (Amazon Q Developer / CodeWhisperer) an
   / Cursor user who painstakingly inserted `cache_control` in their
   request would see `cache_read_input_tokens: 0` forever and the cache
   badge would never light up. The simulator fills that gap locally.
-- **Fallback strategy** (`applySimulatedCacheUsage`):
-  1. Upstream Kiro reported a non-zero `cacheRead` or `cacheWrite` →
-     trust the upstream values; the real prefix cache fired.
-  2. Upstream is silent → write the simulator's numbers in their place.
+- **Fallback strategy** (`applySimulatedCacheUsage`, v1.2.1 — per-field,
+  not all-or-nothing):
+  1. `cache_read`: upstream is almost always silent (this is the entire
+     reason the simulator exists). Fill from simulator whenever upstream
+     reports 0, regardless of what upstream said about `cache_creation`.
+  2. `cache_creation`: keep upstream's real number when present (Kiro's
+     native `cachePoint` writes are real spending), otherwise fall back
+     to the simulator so the breakpoint at least surfaces.
   3. The 5m/1h ephemeral split (`cache_creation.ephemeral_5m_input_tokens`
      / `ephemeral_1h_input_tokens`) is always taken from the simulator,
      because Kiro upstream never reports the breakdown.
+- **v1.2.0 regression note**: the original release used an all-or-nothing
+  `hasUpstreamCache` short-circuit that bypassed the simulator the moment
+  EITHER cache field was non-zero. In production Kiro almost always reports
+  a non-zero `cache_creation` while keeping `cache_read` at 0 (its
+  `cachePoint` writes constantly but rarely re-reads), so the simulator
+  was getting bypassed on every single request and the headline
+  `cache_read` counter never lit up. v1.2.1 ships the per-field strategy
+  above and a dedicated regression fixture
+  (`TestApplySimulatedCacheUsage_KiroProductionShape_FillsCacheRead`).
 - `KiroGatewayService` gains a default-singleton `promptCacheTracker`
   (override via `SetPromptCacheTracker` for tests) and applies the
   simulator after a successful streaming or non-streaming drive only —

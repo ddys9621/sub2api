@@ -16,10 +16,11 @@ import (
 //   - 5m/1h 拆分始终来自 simulator
 //   - 各种 nil 场景不 panic
 
-// TestApplySimulatedCacheUsage_UpstreamNonZero_KeepsUpstream 验证：
-// Kiro 上游真实报告了 cache_read 时，simulator 不可覆盖。这是 fallback
-// 策略的根基：本地模拟仅在上游沉默时填空，不能与真实数据冲突。
-func TestApplySimulatedCacheUsage_UpstreamNonZero_KeepsUpstream(t *testing.T) {
+// TestApplySimulatedCacheUsage_UpstreamReadNonZero_KeepsRead 验证：
+// 当上游真实报告了 cache_read，simulator 不可覆盖该字段（按字段独立判断）。
+// 但 cache_creation 是独立字段——上游为 0 时仍可由 simulator 补。
+// 这是 v1.2.0 → v1.2.1 行为变更：旧策略整体 bypass，新策略按字段判断。
+func TestApplySimulatedCacheUsage_UpstreamReadNonZero_KeepsRead(t *testing.T) {
 	usage := &ClaudeUsage{
 		InputTokens:              5000,
 		OutputTokens:             100,
@@ -27,8 +28,8 @@ func TestApplySimulatedCacheUsage_UpstreamNonZero_KeepsUpstream(t *testing.T) {
 		CacheCreationInputTokens: 0,
 	}
 	sim := KiroCacheUsage{
-		CacheCreationInputTokens: 4500, // 模拟器算出的值不一致
-		CacheReadInputTokens:     0,
+		CacheCreationInputTokens: 4500, // simulator 想补 creation
+		CacheReadInputTokens:     0,    // simulator 无 read
 		CacheCreation5mTokens:    4500,
 		CacheCreation1hTokens:    0,
 	}
@@ -36,10 +37,38 @@ func TestApplySimulatedCacheUsage_UpstreamNonZero_KeepsUpstream(t *testing.T) {
 	applySimulatedCacheUsage(usage, sim)
 
 	require.Equal(t, 2500, usage.CacheReadInputTokens, "upstream cache_read must win")
-	require.Equal(t, 0, usage.CacheCreationInputTokens, "upstream zero must stay zero when other field is non-zero")
-	// 5m/1h 拆分上游不报，simulator 仍可填充
+	require.Equal(t, 4500, usage.CacheCreationInputTokens, "v1.2.1: independent field — simulator fills when upstream is 0")
 	require.Equal(t, 4500, usage.CacheCreation5mTokens)
 	require.Equal(t, 0, usage.CacheCreation1hTokens)
+}
+
+// TestApplySimulatedCacheUsage_KiroProductionShape_FillsCacheRead 是
+// v1.2.0 回归 bug 的核心 fixture：Kiro 上游在生产环境**几乎每次**都报
+// cache_creation > 0 但 cache_read = 0（自家 cachePoint 一直在写但不读）。
+// 旧策略的 hasUpstreamCache 在此处为 true，导致 simulator 永远不被应用，
+// cache_read 永远是 0 —— 这正是用户截图里看到的现象。
+// 新策略必须让 cache_read 由 simulator 补齐。
+func TestApplySimulatedCacheUsage_KiroProductionShape_FillsCacheRead(t *testing.T) {
+	// 模拟生产中真实的 Kiro 上游 usage：cache_creation 一直在涨，cache_read 永远 0。
+	usage := &ClaudeUsage{
+		InputTokens:              30775,
+		OutputTokens:             218,
+		CacheReadInputTokens:     0,     // Kiro 实际行为：从不报
+		CacheCreationInputTokens: 31000, // Kiro 实际行为：几乎每次都报
+	}
+	sim := KiroCacheUsage{
+		CacheCreationInputTokens: 0,     // simulator 这次不算 creation（profile 没新 breakpoint）
+		CacheReadInputTokens:     25000, // simulator 算出 25k 命中
+		CacheCreation5mTokens:    0,
+		CacheCreation1hTokens:    0,
+	}
+
+	applySimulatedCacheUsage(usage, sim)
+
+	require.Equal(t, 25000, usage.CacheReadInputTokens,
+		"v1.2.1 核心修复：上游报了 cache_creation 不应屏蔽 simulator 对 cache_read 的填充")
+	require.Equal(t, 31000, usage.CacheCreationInputTokens,
+		"上游真实 cache_creation 数字必须保留")
 }
 
 // TestApplySimulatedCacheUsage_UpstreamZero_UsesSimulator 验证：

@@ -254,34 +254,48 @@ func (s *KiroGatewayService) applyPromptCacheTracking(account *Account, profile 
 }
 
 // applySimulatedCacheUsage merges the local-tracker fallback into the live
-// usage record. Strategy:
-//   - Upstream Kiro tokenUsage already returned a non-zero cache field
-//     (cache_read OR cache_creation): trust it; the upstream prefix cache
-//     actually fired. Skip the simulator entirely so we don't double-count.
-//   - Otherwise: write the simulator's numbers in place. This is what makes
-//     the client-side cache_control field finally produce a visible effect
-//     for Kiro accounts.
+// usage record. Strategy is per-field, not all-or-nothing, because Kiro
+// upstream has highly asymmetric reporting:
 //
-// The 5m/1h split is always taken from the simulator when it ran, because
-// Kiro upstream never reports it.
+//   - cacheWriteInputTokens (-> CacheCreationInputTokens): Kiro reports this
+//     on nearly every turn because its native cachePoint mechanism is
+//     constantly writing prefixes. The number is real and reflects Kiro's
+//     actual cache spending, so we keep it when present.
+//
+//   - cacheReadInputTokens (-> CacheReadInputTokens): Kiro almost never
+//     reports this — that's the entire reason this simulator exists. The
+//     client's cache_control breakpoints would otherwise never show a hit.
+//
+//   - ephemeral 5m/1h split: Kiro upstream never reports it.
+//
+// Earlier versions of this function bailed out the moment EITHER cache field
+// was non-zero. That was wrong: in production Kiro almost always reports a
+// non-zero cache_creation while keeping cache_read at 0, which meant the
+// simulator was getting bypassed on every single request and the cache_read
+// counter never lit up. Treating each field independently fixes that without
+// double-counting cache_creation (we still defer to upstream when it spoke).
 func applySimulatedCacheUsage(usage *ClaudeUsage, sim KiroCacheUsage) {
 	if usage == nil || sim.IsZero() {
 		return
 	}
-	hasUpstreamCache := usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0
-	if hasUpstreamCache {
-		// Trust upstream; only fill the 5m/1h split if Kiro left it empty
-		// (it always will today — Kiro upstream never reports the split).
-		if usage.CacheCreation5mTokens == 0 && usage.CacheCreation1hTokens == 0 {
-			usage.CacheCreation5mTokens = sim.CacheCreation5mTokens
-			usage.CacheCreation1hTokens = sim.CacheCreation1hTokens
-		}
-		return
+	// cache_read: the headline fix. Fill from simulator whenever upstream
+	// stayed silent — which on Kiro means almost always.
+	if usage.CacheReadInputTokens == 0 {
+		usage.CacheReadInputTokens = sim.CacheReadInputTokens
 	}
-	usage.CacheCreationInputTokens = sim.CacheCreationInputTokens
-	usage.CacheReadInputTokens = sim.CacheReadInputTokens
-	usage.CacheCreation5mTokens = sim.CacheCreation5mTokens
-	usage.CacheCreation1hTokens = sim.CacheCreation1hTokens
+	// cache_creation: keep upstream's real number when it spoke (Kiro's
+	// cachePoint write is real spending), otherwise let the simulator fill
+	// in so the breakpoint at least shows up.
+	if usage.CacheCreationInputTokens == 0 {
+		usage.CacheCreationInputTokens = sim.CacheCreationInputTokens
+	}
+	// 5m/1h ephemeral split: upstream never reports it, simulator always
+	// owns this view. We still gate on both being zero so that a future
+	// Kiro version that DOES start reporting the split can win.
+	if usage.CacheCreation5mTokens == 0 && usage.CacheCreation1hTokens == 0 {
+		usage.CacheCreation5mTokens = sim.CacheCreation5mTokens
+		usage.CacheCreation1hTokens = sim.CacheCreation1hTokens
+	}
 }
 
 // SetWebSearchDeps wires in the ChannelService used for channel-level
